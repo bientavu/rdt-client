@@ -241,31 +241,52 @@ public class QBittorrent(ILogger<QBittorrent> logger, ISettings settings, Authen
             }
             else if (torrent.Downloads is { Count: > 0 })
             {
-                var dlStats = torrent.Downloads.Select(m => torrents.GetDownloadStats(m.DownloadId)).ToList();
-                var dlBytesDone = dlStats.Sum(m => m.BytesDone);
-                var dlBytesTotal = dlStats.Sum(m => m.BytesTotal);
-                speed = (Int32)(dlStats.Any() ? dlStats.Average(m => m.Speed) : 0);
-                var downloadProgress = dlBytesTotal > 0 ? Math.Clamp((Double)dlBytesDone / dlBytesTotal, 0.0, 1.0) : 0;
+                // Custom (bientavu): report the LOCAL download progress only, instead of
+                // averaging it with the debrid-side progress (a cached torrent showed 50%
+                // before a single byte reached the disk).
+                // Only ACTIVE downloads have stats; finished and queued ones return (0, 0, 0),
+                // so a byte sum restarted from 0% at each file of a season pack. Count files
+                // instead: finished = 1, active = its own ratio, queued = 0.
+                // ponytail: every file weighs the same (sizes of finished/queued files are not
+                // kept). Exact for a single movie file, close enough for episodes of a pack.
+                var filesProgress = 0.0;
+                var activeSpeed = 0L;
 
-                if (rdProgress >= 1.0 && downloadProgress >= 1.0)
+                foreach (var download in torrent.Downloads)
                 {
-                    progress = 1.0;
+                    if (download.DownloadFinished != null)
+                    {
+                        filesProgress += 1.0;
+
+                        continue;
+                    }
+
+                    var stats = torrents.GetDownloadStats(download.DownloadId);
+                    activeSpeed += stats.Speed;
+
+                    if (stats.BytesTotal > 0)
+                    {
+                        filesProgress += Math.Clamp((Double)stats.BytesDone / stats.BytesTotal, 0.0, 1.0);
+                    }
                 }
-                else
-                {
-                    progress = (rdProgress + downloadProgress) / 2.0;
-                }
+
+                speed = activeSpeed;
+                progress = filesProgress / torrent.Downloads.Count;
             }
             else
             {
-                progress = rdProgress;
+                // Custom (bientavu): nothing on disk yet, whatever the debrid side says.
+                progress = 0.0;
             }
 
             var remaining = TimeSpan.Zero;
 
             if (progress > 0 && progress < 1.0)
             {
-                var startTime = torrent.Retry > torrent.Added ? torrent.Retry.Value : torrent.Added;
+                // Custom (bientavu): measure from the first local download start, not from
+                // when the torrent was added (debrid wait + queue time inflated the ETA).
+                var startTime = torrent.Downloads?.Min(m => m.DownloadStarted)
+                                ?? (torrent.Retry > torrent.Added ? torrent.Retry.Value : torrent.Added);
                 var elapsed = DateTimeOffset.UtcNow - startTime;
                 var totalEstimatedTime = TimeSpan.FromTicks((Int64)(elapsed.Ticks / progress));
                 remaining = totalEstimatedTime - elapsed;

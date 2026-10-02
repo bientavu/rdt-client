@@ -102,7 +102,66 @@ public class QBittorrentTest
     }
 
     [Fact]
-    public async Task TorrentInfo_ShouldReport90Percent_WhenRDIs100AndLocalIs80()
+    public async Task TorrentInfo_ShouldReport0Percent_WhenNothingDownloadedLocally()
+    {
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = Guid.NewGuid(),
+                Hash = "hash1",
+                RdName = "Torrent 1",
+                RdProgress = 100, // cached on Real-Debrid, local download not started
+                Type = DownloadType.Torrent
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        var result = await _qBittorrent.TorrentInfo();
+
+        Assert.Equal(0f, result[0].Progress);
+    }
+
+    [Fact]
+    public async Task TorrentInfo_ShouldCountFiles_ForSeasonPack()
+    {
+        var torrentId = Guid.NewGuid();
+        var finished = new Download { DownloadId = Guid.NewGuid(), TorrentId = torrentId, DownloadStarted = DateTimeOffset.UtcNow.AddMinutes(-2), DownloadFinished = DateTimeOffset.UtcNow };
+        var active = new Download { DownloadId = Guid.NewGuid(), TorrentId = torrentId, DownloadStarted = DateTimeOffset.UtcNow.AddMinutes(-1) };
+        var queued = new Download { DownloadId = Guid.NewGuid(), TorrentId = torrentId };
+        var queued2 = new Download { DownloadId = Guid.NewGuid(), TorrentId = torrentId };
+
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = torrentId,
+                Hash = "hash1",
+                RdName = "Show S01",
+                RdProgress = 100,
+                Type = DownloadType.Torrent,
+                Downloads = new List<Download> { finished, active, queued, queued2 }
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Only the active download has stats; finished and queued ones are (0, 0, 0).
+        _torrentsMock.Setup(m => m.GetDownloadStats(It.IsAny<Guid>())).Returns((0, 0, 0));
+        _torrentsMock.Setup(m => m.GetDownloadStats(active.DownloadId)).Returns((500, 1000, 500));
+
+        var result = await _qBittorrent.TorrentInfo();
+
+        // (1 finished + 0.5 active + 0 + 0) / 4 files
+        Assert.Equal(0.375f, result[0].Progress);
+        Assert.Equal(500, result[0].Dlspeed);
+        // 120 s since the first LOCAL start at 37.5% => 320 s total, ~200 s left.
+        Assert.InRange(result[0].Eta!.Value, 190, 210);
+    }
+
+    [Fact]
+    public async Task TorrentInfo_ShouldReportLocalProgressOnly_WhenRDIs100AndLocalIs80()
     {
         // Arrange
         var downloadId = Guid.NewGuid();
@@ -139,8 +198,8 @@ public class QBittorrentTest
         // Assert
         Assert.Single(result);
 
-        // Current behavior is (1.0 + 0.8) / 2 = 0.9
-        Assert.Equal(0.9f, result[0].Progress);
+        // Custom (bientavu): local progress only, no longer (1.0 + 0.8) / 2 = 0.9
+        Assert.Equal(0.8f, result[0].Progress);
     }
 
     [Fact]
