@@ -55,6 +55,17 @@ jobs:
           docker run --rm -v "$PWD/server:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 \
             dotnet test RdtClient.Service.Test
 
+      # Same as upstream's build-docker-image.yml: the csproj says 1.0.0, so without this
+      # the UI shows "v1.0.0" and a permanent update banner. Plain upstream number (an
+      # AssemblyVersion can't carry a suffix): the banner then only appears when upstream
+      # really ships a newer release, i.e. when this workflow should be re-run.
+      # Working-tree only, never committed.
+      - name: Stamp version
+        run: |
+          VERSION="${{ inputs.upstream_tag }}"; VERSION="${VERSION#v}"
+          sed -i "s|<Version>.*</Version>|<Version>$VERSION</Version>|" server/RdtClient.Web/RdtClient.Web.csproj
+          sed -i "s|<AssemblyVersion>.*</AssemblyVersion>|<AssemblyVersion>$VERSION</AssemblyVersion>|" server/RdtClient.Web/RdtClient.Web.csproj
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
